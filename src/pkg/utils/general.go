@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/gif"  // Register GIF format
@@ -23,6 +24,8 @@ import (
 	"github.com/sirupsen/logrus"
 	_ "golang.org/x/image/webp" // Register WebP format
 )
+
+const youtubeShortPrefix = "https://www.youtube.com/shorts/"
 
 // RemoveFile is removing file with delay
 func RemoveFile(delaySecond int, paths ...string) error {
@@ -81,6 +84,10 @@ type Metadata struct {
 	Width       *uint32
 }
 
+func isYoutubeShortURL(urlStr string) bool {
+	return strings.HasPrefix(urlStr, youtubeShortPrefix)
+}
+
 func GetMetaDataFromURL(urlStr string) (meta Metadata, err error) {
 	// Create HTTP client with timeout
 	client := &http.Client{
@@ -99,56 +106,91 @@ func GetMetaDataFromURL(urlStr string) (meta Metadata, err error) {
 		return meta, fmt.Errorf("invalid URL: %v", err)
 	}
 
-	// Send an HTTP GET request to the website
-	response, err := client.Get(urlStr)
-	if err != nil {
-		return meta, err
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return meta, fmt.Errorf("HTTP request failed with status: %s", response.Status)
-	}
-
-	// Parse the HTML document
-	document, err := goquery.NewDocumentFromReader(response.Body)
-	if err != nil {
-		return meta, err
-	}
-
-	document.Find("meta[name='description']").Each(func(index int, element *goquery.Selection) {
-		meta.Description, _ = element.Attr("content")
-	})
-
-	// find title - try multiple sources
-	// First try og:title
-	document.Find("meta[property='og:title']").Each(func(index int, element *goquery.Selection) {
-		if content, exists := element.Attr("content"); exists && content != "" {
-			meta.Title = content
+	if isYoutubeShortURL(urlStr) {
+		// get the metadata from the oembed URL, it returns json with title, author_name, author_url
+		response, err := client.Get(fmt.Sprintf("https://www.youtube.com/oembed?url=%s&format=json", urlStr))
+		if err != nil {
+			return meta, err
 		}
-	})
-	// If og:title not found, try regular title tag
-	if meta.Title == "" {
-		document.Find("title").Each(func(index int, element *goquery.Selection) {
-			meta.Title = element.Text()
+		defer response.Body.Close()
+
+		if response.StatusCode != http.StatusOK {
+			return meta, fmt.Errorf("HTTP request failed with status: %s", response.Status)
+		}
+
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return meta, err
+		}
+
+		var oembedResponse struct {
+			Title      string `json:"title"`
+			AuthorName string `json:"author_name"`
+			AuthorURL  string `json:"author_url"`
+		}
+
+		err = json.Unmarshal(body, &oembedResponse)
+		if err != nil {
+			return meta, err
+		}
+
+		// construct the metadata
+		meta.Title = oembedResponse.Title
+		meta.Description = fmt.Sprintf("%s by %s - %s", oembedResponse.Title, oembedResponse.AuthorName, oembedResponse.AuthorURL)
+		meta.Image = fmt.Sprintf("https://i.ytimg.com/vi/%v/oardefault.jpg", strings.TrimPrefix(urlStr, youtubeShortPrefix))
+
+	} else {
+		// Send an HTTP GET request to the website
+		response, err := client.Get(urlStr)
+		if err != nil {
+			return meta, err
+		}
+		defer response.Body.Close()
+
+		if response.StatusCode != http.StatusOK {
+			return meta, fmt.Errorf("HTTP request failed with status: %s", response.Status)
+		}
+
+		// Parse the HTML document
+		document, err := goquery.NewDocumentFromReader(response.Body)
+		if err != nil {
+			return meta, err
+		}
+
+		document.Find("meta[name='description']").Each(func(index int, element *goquery.Selection) {
+			meta.Description, _ = element.Attr("content")
 		})
-	}
 
-	// Try to find image URL from various sources
-	// First try og:image
-	document.Find("meta[property='og:image']").Each(func(index int, element *goquery.Selection) {
-		if content, exists := element.Attr("content"); exists && content != "" {
-			meta.Image = content
+		// find title - try multiple sources
+		// First try og:title
+		document.Find("meta[property='og:title']").Each(func(index int, element *goquery.Selection) {
+			if content, exists := element.Attr("content"); exists && content != "" {
+				meta.Title = content
+			}
+		})
+		// If og:title not found, try regular title tag
+		if meta.Title == "" {
+			document.Find("title").Each(func(index int, element *goquery.Selection) {
+				meta.Title = element.Text()
+			})
 		}
-	})
 
-	// If og:image not found, try twitter:image
-	if meta.Image == "" {
-		document.Find("meta[name='twitter:image']").Each(func(index int, element *goquery.Selection) {
+		// Try to find image URL from various sources
+		// First try og:image
+		document.Find("meta[property='og:image']").Each(func(index int, element *goquery.Selection) {
 			if content, exists := element.Attr("content"); exists && content != "" {
 				meta.Image = content
 			}
 		})
+
+		// If og:image not found, try twitter:image
+		if meta.Image == "" {
+			document.Find("meta[name='twitter:image']").Each(func(index int, element *goquery.Selection) {
+				if content, exists := element.Attr("content"); exists && content != "" {
+					meta.Image = content
+				}
+			})
+		}
 	}
 
 	// If an image URL is found, resolve it if it's relative

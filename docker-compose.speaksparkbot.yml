@@ -1,0 +1,21 @@
+services:
+  whatsapp_go:
+    build:
+      context: .
+      dockerfile: ./docker/golang.Dockerfile
+    ports:
+      - "8020:8020"
+    volumes:
+      - whatsapp:/app/storages
+    environment:
+      - APP_BASIC_AUTH=admin:admin
+      - APP_PORT=8020
+    command:
+      - rest
+      - --webhook="http://host.docker.internal:8091" # add webhook url here
+      - --debug=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  whatsapp:
