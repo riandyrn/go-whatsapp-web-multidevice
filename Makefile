@@ -13,5 +13,5 @@ build-image:
 		-f ./docker/golang.Dockerfile \
 		--platform linux/amd64,linux/arm64 \
 		-t riandyrn/gowa:latest \
-		-t riandyrn/gowa:v7.8.1 \
+		-t riandyrn/gowa:v7.10.1 \
 		--push .
